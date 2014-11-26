@@ -32,6 +32,7 @@
 #include "sr_dumper.h"
 #include "sr_router.h"
 #include "sr_rt.h"
+#include "sr_nat.h"
 
 extern char* optarg;
 
@@ -64,18 +65,25 @@ int main(int argc, char **argv)
     char *template = NULL;
     unsigned int port = DEFAULT_PORT;
     unsigned int topo = DEFAULT_TOPO;
+    int nat_enabled = 0;
+    int icmp_query_timeout = 60;
+    int tcp_established_idle_timeout = 7440;
+    int tcp_transitionary_idle_timeout = 300;
     char *logfile = 0;
     struct sr_instance sr;
 
     printf("Using %s\n", VERSION_INFO);
 
-    while ((c = getopt(argc, argv, "hs:v:p:u:t:r:l:T:")) != EOF)
+    while ((c = getopt(argc, argv, "hns:v:p:u:t:r:l:I:E:R:T:")) != EOF)
     {
         switch (c)
         {
             case 'h':
                 usage(argv[0]);
                 exit(0);
+                break;
+            case 'n':
+                nat_enabled = 1;
                 break;
             case 'p':
                 port = atoi((char *) optarg);
@@ -98,9 +106,19 @@ int main(int argc, char **argv)
             case 'r':
                 rtable = optarg;
                 break;
+            case 'I':
+                icmp_query_timeout = atoi((char *) optarg);
+                break;
+            case 'E':
+                tcp_established_idle_timeout = atoi((char *) optarg);
+                break;
+            case 'R':
+                tcp_transitionary_idle_timeout = atoi((char *) optarg);
+                break;
             case 'T':
                 template = optarg;
                 break;
+
         } /* switch */
     } /* -- while -- */
 
@@ -154,6 +172,18 @@ int main(int argc, char **argv)
     else {
       /* Read from specified routing table */
       sr_load_rt_wrap(&sr, rtable);
+    }
+
+    /* call the nat init */
+    if (nat_enabled) {
+        struct sr_nat sr_nat_instance;
+        sr_nat_instance.icmp_query_timeout = icmp_query_timeout;
+        sr_nat_instance.tcp_transitionary_idle_timeout = tcp_transitionary_idle_timeout;
+        sr_nat_instance.tcp_established_idle_timeout = tcp_established_idle_timeout;
+        sr_nat_init(&sr_nat_instance);
+        sr.nat_instance = &sr_nat_instance;
+    } else {
+        sr.nat_instance = NULL;
     }
 
     /* call router init (for arp subsystem etc.) */

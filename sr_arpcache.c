@@ -13,15 +13,6 @@
 #include "sr_utils.h"
 
 
-
-void send_icmp_destination_host_unreachable(struct sr_instance* sr,
-                                            uint8_t *buf, unsigned int len) {
-    
-    /* sr_ethernet_hdr_t* ether_hdr = (sr_ethernet_hdr_t*)buf; */
-    
-    print_hdrs(buf, len);
-}
-
 void send_arp_request(struct sr_instance* sr, struct sr_arpreq* req) {
     /* send arp request, make arp header and ether header.*/
     struct sr_if* interface_sr_if = sr_get_interface(sr, req->packets->iface);

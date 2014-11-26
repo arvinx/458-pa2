@@ -38,10 +38,16 @@ struct sr_nat {
   pthread_mutexattr_t attr;
   pthread_attr_t thread_attr;
   pthread_t thread;
+
+  /* optional args */
+  int icmp_query_timeout;
+  int tcp_established_idle_timeout;
+  int tcp_transitionary_idle_timeout;
+
 };
 
 
-int   sr_nat_init(struct sr_nat *nat);     /* Initializes the nat */
+int sr_nat_init(struct sr_nat *nat);     /* Initializes the nat */
 int   sr_nat_destroy(struct sr_nat *nat);  /* Destroys the nat (free memory) */
 void *sr_nat_timeout(void *nat_ptr);  /* Periodic Timout */
 

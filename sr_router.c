@@ -132,6 +132,11 @@ void make_and_send_icmp_echo(struct sr_instance* sr, sr_ip_hdr_t* ip_packet) {
     ip_packet->ip_src = dest;
     ip_packet->ip_dst = src;
 
+    uint16_t id = (uint16_t)(((uint8_t *) ip_packet) + sizeof(sr_ip_hdr_t));
+    uint16_t seq = (uint16_t)(((uint8_t *) ip_packet) + sizeof(sr_ip_hdr_t) + 16);
+
+    printf(" ICMP ECHO ID: %d  SEQ #: %d\n", id, seq);
+
     sr_icmp_hdr_t* icmp_header = (sr_icmp_hdr_t*) ((uint8_t*)ip_packet + 4*ip_packet->ip_hl);
     icmp_header->icmp_type = 0;
     icmp_header->icmp_type = 0;
