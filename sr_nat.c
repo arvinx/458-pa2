@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <arpa/inet.h>
 
 #include "sr_nat.h"
 
@@ -98,6 +100,7 @@ struct sr_nat_mapping *sr_nat_lookup_external(struct sr_nat *nat,
     while (cur != NULL) {
         if (cur->aux_ext == aux_ext && cur->type == type) {
             cur->last_updated = time(NULL);
+            copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
             memcpy(copy, cur, sizeof(struct sr_nat_mapping));
             break;
         }
@@ -121,6 +124,7 @@ struct sr_nat_mapping *sr_nat_lookup_internal(struct sr_nat *nat,
     while (cur != NULL) {
         if (cur->aux_int == aux_int && cur->ip_int == ip_int && cur->type == type) {
             cur->last_updated = time(NULL);
+            copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
             memcpy(copy, cur, sizeof(struct sr_nat_mapping));
             break;
         }
@@ -139,23 +143,24 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat,
     
     pthread_mutex_lock(&(nat->lock));
     
-    struct sr_nat_mapping mapping;
+    struct sr_nat_mapping* mapping = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
     
     if (type == nat_mapping_icmp) {
-        mapping.ip_int = ip_int;
-        mapping.aux_int = aux_int;
-        mapping.aux_ext = rand() % 64511 + 1024;
-        mapping.last_updated = time(NULL);
-        mapping.type = nat_mapping_icmp;
+        mapping->ip_int = ip_int;
+        mapping->aux_int = aux_int;
+        mapping->aux_ext = htons(rand() % 64511 + 1024);
+        printf("Made random aux_ext: %d\n", ntohs(mapping->aux_ext));
+        mapping->last_updated = time(NULL);
+        mapping->type = nat_mapping_icmp;
     } else {
         
     }
     
-    mapping.next = nat->mappings;
-    nat->mappings = &mapping;
+    mapping->next = nat->mappings;
+    nat->mappings = mapping;
     
     struct sr_nat_mapping* mapping_copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
-    memcpy(mapping_copy, &mapping, sizeof(struct sr_nat_mapping));
+    memcpy(mapping_copy, mapping, sizeof(struct sr_nat_mapping));
     
     
     pthread_mutex_unlock(&(nat->lock));
