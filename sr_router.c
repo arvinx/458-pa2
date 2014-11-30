@@ -132,11 +132,6 @@ void make_and_send_icmp_echo(struct sr_instance* sr, sr_ip_hdr_t* ip_packet) {
     ip_packet->ip_src = dest;
     ip_packet->ip_dst = src;
 
-    uint16_t id = (uint16_t)(((uint8_t *) ip_packet) + sizeof(sr_ip_hdr_t));
-    uint16_t seq = (uint16_t)(((uint8_t *) ip_packet) + sizeof(sr_ip_hdr_t) + 16);
-
-    printf(" ICMP ECHO ID: %d  SEQ #: %d\n", id, seq);
-
     sr_icmp_hdr_t* icmp_header = (sr_icmp_hdr_t*) ((uint8_t*)ip_packet + 4*ip_packet->ip_hl);
     icmp_header->icmp_type = 0;
     icmp_header->icmp_type = 0;
@@ -147,6 +142,11 @@ void make_and_send_icmp_echo(struct sr_instance* sr, sr_ip_hdr_t* ip_packet) {
     uint16_t ip_len = ntohs(ip_packet->ip_len);
     icmp_header->icmp_sum = 0;
     icmp_header->icmp_sum = cksum(icmp_header, ip_len - 4*ip_packet->ip_hl);
+
+    sr_icmp_t0_hdr_t* icmp = (sr_icmp_t0_hdr_t*)icmp_header;
+    print_hdr_icmp((uint8_t*)icmp);
+    printf(" ********** SENDING ECHO REPLY \n");
+    printf(" ID: %d SEQ: %d\n", icmp->id, icmp->sequence_num);       
 
     send_packet(sr, (uint8_t*)ip_packet, ip_len, src, ethertype_ip, 0);
 }
@@ -311,6 +311,7 @@ void sr_handlepacket(struct sr_instance* sr,
 
             if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp)  {
                 /* send echo reply */
+
                 make_and_send_icmp_echo(sr, ip_packet);
                 
             } else {
@@ -330,6 +331,19 @@ void sr_handlepacket(struct sr_instance* sr,
                 make_and_send_icmp(sr, ip_packet, 11, 0);
                 return;
             }
+
+            if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp)  {
+                sr_icmp_hdr_t* icmp_header_2 = (sr_icmp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
+                if (icmp_header_2->icmp_type == 0) {
+                    printf("Forwarding a type 0 icmp \n");
+                    sr_icmp_t8_hdr_t* icmp = (sr_icmp_t8_hdr_t*)icmp_header_2;
+                    print_hdr_icmp((uint8_t*)icmp);
+
+                    printf(" ID: %d SEQ: %d\n", ntohs(icmp->id), ntohs(icmp->sequence_num));                    
+                }
+            }
+            
+
             
             ip_packet->ip_sum = 0;
             ip_packet->ip_sum = cksum(ip_packet, ip_packet->ip_hl*4);

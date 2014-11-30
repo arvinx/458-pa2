@@ -102,6 +102,15 @@ struct sr_icmp_t3_hdr {
 typedef struct sr_icmp_t3_hdr sr_icmp_t3_hdr_t;
 
 
+typedef struct __attribute__((packed))
+{  
+   uint8_t icmp_type;
+   uint8_t icmp_code;
+   uint16_t icmp_sum;
+   uint16_t id;
+   uint16_t sequence_num;
+   uint8_t data[ICMP_DATA_SIZE];
+} sr_icmp_t0_hdr_t, sr_icmp_t8_hdr_t;
 
 
 /*
