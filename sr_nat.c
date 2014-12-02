@@ -11,6 +11,8 @@
 
 struct sr_nat_mapping *sr_nat_lookup_external_pointer(struct sr_nat *nat,
                                                       uint16_t aux_ext, sr_nat_mapping_type type);
+struct sr_nat_mapping *sr_nat_lookup_internal_pointer(struct sr_nat *nat,
+                                                      uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type);
 
 int sr_nat_init(struct sr_nat *nat) { /* Initializes the nat */
     
@@ -127,8 +129,8 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
 }
 
 /* find tcp connection associated with the given port */
-struct sr_nat_connection *sr_nat_lookup_external_tcp_connection(struct sr_nat *nat,
-                                                                uint16_t aux_ext, uint16_t server_port) {
+struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
+                                                        uint16_t aux_ext, uint16_t server_port) {
     pthread_mutex_lock(&(nat->lock));
 
 
@@ -151,6 +153,7 @@ struct sr_nat_connection *sr_nat_lookup_external_tcp_connection(struct sr_nat *n
     return copy_conns;
 }
 
+/* assumes mapping is a pointer to the actual mapping in sr_nat strcut */
 struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, struct sr_nat_mapping *mapping,
                                                         uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state) {
 
@@ -159,7 +162,7 @@ struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, struc
     conn->state = state;
     conn->last_used = time(NULL);
     conn->ext_port = ext_port;
-    conn->ext_ip = exp_ip;
+    conn->ext_ip = ext_ip;
 
     /* insert into linked list */
     struct sr_nat_connection *mapping_conns = mapping->conns;
@@ -173,8 +176,20 @@ struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, struc
     return conn;
 }
 
-int update_sr_nat_tcp_connection() {
+/* assumes mapping is a pointer to the actual mapping in sr_nat strcut */
+int update_sr_nat_tcp_connection(struct sr_nat *nat, struct sr_nat_mapping *mapping,
+                                 uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state new_state) {
 
+    struct sr_nat_connection *conn = mapping->conns;
+
+    while (conn) {
+        if (conn->ext_ip == ext_ip && conn->ext_port == ext_port) {
+            conn->state = new_state;
+            return 1;
+        }
+        conn = conn->next;
+    }
+    return 0;
 }
 
 struct sr_nat_mapping *sr_nat_lookup_external_pointer(struct sr_nat *nat,
@@ -217,7 +232,7 @@ struct sr_nat_mapping *sr_nat_lookup_external(struct sr_nat *nat,
 }
 
 struct sr_nat_mapping *sr_nat_lookup_internal_pointer(struct sr_nat *nat,
-                                              uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type ) {
+                                              uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type) {
     
     pthread_mutex_lock(&(nat->lock));
 
