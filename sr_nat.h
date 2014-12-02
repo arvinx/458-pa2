@@ -12,9 +12,19 @@ typedef enum {
   /* nat_mapping_udp, */
 } sr_nat_mapping_type;
 
+typedef enum {
+  LISTEN,
+  OUTBOUND_SENT_SYN,
+  INBOUND_SYN,
+  ESTALISHED
+} sr_nat_tcp_state;
+
 struct sr_nat_connection {
   /* add TCP connection state data members here */
-
+  sr_nat_tcp_state state;
+  time_t last_used;
+  uint32_t ext_ip;
+  uint16_t ext_port;
   struct sr_nat_connection *next;
 };
 
@@ -66,5 +76,11 @@ struct sr_nat_mapping *sr_nat_lookup_internal(struct sr_nat *nat,
 struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat,
   uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type );
 
+/* returns pointer to mapping, useful for calling insert_tcp_connection */
+struct sr_nat_mapping *sr_nat_lookup_external_pointer(struct sr_nat *nat,
+  uint16_t aux_ext, sr_nat_mapping_type type);
 
+/* returns pointer to mapping, useful for calling insert_tcp_connection */
+struct sr_nat_mapping *sr_nat_lookup_internal_pointer(struct sr_nat *nat,
+  uint16_t aux_ext, sr_nat_mapping_type type);
 #endif

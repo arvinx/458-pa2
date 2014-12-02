@@ -112,6 +112,19 @@ struct sr_icmp_t0_hdr {
 } __attribute__ ((packed)) ;
 typedef struct sr_icmp_t0_hdr sr_icmp_t0_hdr_t;
 
+struct sr_tcp_hdr {
+    uint16_t source_port;
+    uint16_t dest_port;
+    uint32_t seq_number;
+    uint32_t ack_number;
+    uint8_t reserved;
+    uint8_t flags;
+    uint16_t window;
+    uint16_t check_sum;
+    uint16_t urgent_ptr;
+} __attribute__ ((packed)) ;
+typedef struct sr_tcp_hdr sr_tcp_hdr_t;
+
 /*
  * Structure of an internet header, naked of options.
  */
