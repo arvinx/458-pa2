@@ -95,7 +95,7 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
 
                 /* clean up connections */
                 while (conns) {
-                    if ((conns->state == ESTALISHED && (difftime(curtime, conns->last_used) > nat->tcp_established_idle_timeout))
+                    if ((conns->state == ESTABLISHED && (difftime(curtime, conns->last_used) > nat->tcp_established_idle_timeout))
                         || (conns->state == LISTEN && (difftime(curtime, conns->last_used) > nat->tcp_transitionary_idle_timeout))) {
                         
                         if (!conns_prev) {
@@ -105,6 +105,8 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
                         }
                         conns = conns->next;
 
+                    } else if (conns->state == INBOUND_SYN_UNSOLIC && (difftime(curtime, conns->last_used) > 6)) {
+                        conns->state = CLOSED;
                     }
                 }
 
@@ -129,12 +131,18 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
 }
 
 /* find tcp connection associated with the given port */
-struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
-                                                        uint16_t aux_ext, uint16_t server_port) {
+struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat, uint16_t aux_ext, uint16_t aux_int,
+                                 uint32_t dst_ip, uint16_t dst_port, uint32_t src_ip, sr_nat_tcp_state state) {
     pthread_mutex_lock(&(nat->lock));
 
+    struct sr_nat_mapping *mapping;
 
-    struct sr_nat_mapping *mapping = sr_nat_lookup_external(nat, aux_ext, nat_mapping_tcp);
+    if (aux_ext != 0) {
+        mapping = sr_nat_lookup_external(nat, aux_ext, nat_mapping_tcp);
+    } else {
+        mapping = sr_nat_lookup_internal(nat, src_ip, aux_int, nat_mapping_tcp);
+    }
+    
     if (!mapping)
         return NULL;
 
@@ -142,7 +150,7 @@ struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
     struct sr_nat_connection *copy_conns = NULL;
     
     while (conns) {
-        if (conns->ext_port == server_port) {
+        if (conns->ext_port == dst_port && conns->ext_ip == dst_ip && conns->state == state) {
             copy_conns = (struct sr_nat_connection*) malloc(sizeof(struct sr_nat_connection));
             memcpy(copy_conns, conns, sizeof(struct sr_nat_connection));
             break;
@@ -154,7 +162,7 @@ struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
 }
 
 /* assumes mapping is a pointer to the actual mapping in sr_nat strcut */
-struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, struct sr_nat_mapping *mapping,
+struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, uint32_t ip_int, uint16_t aux_int,
                                                         uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state) {
 
     struct sr_nat_connection *conn = (struct sr_nat_connection *) malloc(sizeof(struct sr_nat_connection));
@@ -163,6 +171,15 @@ struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, struc
     conn->last_used = time(NULL);
     conn->ext_port = ext_port;
     conn->ext_ip = ext_ip;
+
+    /* find mapping */
+    struct sr_nat_mapping *mapping = nat->mappings;
+    while (mapping != NULL) {
+        if (mapping->aux_int == aux_int && mapping->ip_int == ip_int && mapping->type == nat_mapping_tcp) {
+            break;
+        }
+        mapping = mapping->next;
+    }
 
     /* insert into linked list */
     struct sr_nat_connection *mapping_conns = mapping->conns;
@@ -185,6 +202,7 @@ int update_sr_nat_tcp_connection(struct sr_nat *nat, struct sr_nat_mapping *mapp
     while (conn) {
         if (conn->ext_ip == ext_ip && conn->ext_port == ext_port) {
             conn->state = new_state;
+            conn->last_used = time(NULL);
             return 1;
         }
         conn = conn->next;
@@ -224,8 +242,10 @@ struct sr_nat_mapping *sr_nat_lookup_external(struct sr_nat *nat,
     struct sr_nat_mapping *cur = sr_nat_lookup_external_pointer(nat, aux_ext, type);
     struct sr_nat_mapping *copy = NULL;
 
-    copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
-    memcpy(copy, cur, sizeof(struct sr_nat_mapping));
+    if (cur) {
+        copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
+        memcpy(copy, cur, sizeof(struct sr_nat_mapping));        
+    }
     
     pthread_mutex_unlock(&(nat->lock));
     return copy;
@@ -262,9 +282,11 @@ struct sr_nat_mapping *sr_nat_lookup_internal(struct sr_nat *nat,
     struct sr_nat_mapping *cur = sr_nat_lookup_internal_pointer(nat, ip_int, aux_int, type);
     struct sr_nat_mapping *copy = NULL;
 
-    copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
-    memcpy(copy, cur, sizeof(struct sr_nat_mapping));
-
+    if (cur) {
+        copy = (struct sr_nat_mapping*) malloc(sizeof(struct sr_nat_mapping));
+        memcpy(copy, cur, sizeof(struct sr_nat_mapping));    
+    }
+    
     pthread_mutex_unlock(&(nat->lock));
     return copy;
 }

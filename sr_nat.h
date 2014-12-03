@@ -6,6 +6,12 @@
 #include <time.h>
 #include <pthread.h>
 
+/* TCP FLAGS */
+#define FLAG_FIN    1
+#define FLAG_SYN    2
+#define FLAG_PUSH   8
+#define FLAG_ACK    16
+
 typedef enum {
   nat_mapping_icmp,
   nat_mapping_tcp
@@ -16,15 +22,17 @@ typedef enum {
   LISTEN,
   OUTBOUND_SENT_SYN,
   INBOUND_SYN,
-  ESTALISHED
+  INBOUND_SYN_UNSOLIC,
+  CLOSED,
+  ESTABLISHED
 } sr_nat_tcp_state;
 
 struct sr_nat_connection {
   /* add TCP connection state data members here */
   sr_nat_tcp_state state;
   time_t last_used;
-  uint32_t ext_ip;
-  uint16_t ext_port;
+  uint32_t ext_ip; /* server ip */
+  uint16_t ext_port; /* server port */
   struct sr_nat_connection *next;
 };
 
@@ -87,10 +95,10 @@ struct sr_nat_mapping *sr_nat_lookup_internal_pointer(struct sr_nat *nat,
 
 
 struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
-  uint16_t aux_ext, uint16_t server_port);
+  uint16_t aux_ext, uint16_t aux_int, uint32_t dst_ip, uint16_t dst_port, uint32_t src_ip, sr_nat_tcp_state state);
 
 struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat,
-  struct sr_nat_mapping *mapping, uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state);
+  uint32_t ip_int, uint16_t aux_int, uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state);
 
 int update_sr_nat_tcp_connection(struct sr_nat *nat, struct sr_nat_mapping *mapping,
   uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state new_state);

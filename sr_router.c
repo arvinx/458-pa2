@@ -215,7 +215,7 @@ void make_and_send_icmp(struct sr_instance* sr, sr_ip_hdr_t* ip_packet, int icmp
     memcpy(packet_to_send, ip_header, 4*ip_header->ip_hl);
     memcpy(packet_to_send + 4*ip_header->ip_hl, &icmp_header, len - 4*ip_header->ip_hl);
 
-    send_packet(sr, packet_to_send, len, ip_packet->ip_src, ethertype_ip, 2);
+    send_packet(sr, packet_to_send, len, ip_packet->ip_src, ethertype_ip, 0);
 }
 
 /* wrapper to send ip packets and arp packets. wraps them in ether frame*/
@@ -282,6 +282,150 @@ void send_packet(struct sr_instance* sr, uint8_t* packet, unsigned int packet_le
 
 }
 
+/* returns 0 if no modification made to icmp/tcp headers, 1 if icmp header
+   modified, 2 if tcp header modified */
+void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hdr_t* ip_packet) {
+    struct sr_rt* rtable_entry = longest_prefix_match(sr, ip_packet->ip_src);
+    /* if it's sourced from the client behind nat we need to do a nat translation for icmp 0 */
+
+    if (strcmp(rtable_entry->interface, int_iface_name) == 0) {
+        /* packet is from client (src) if recieved on (eth1) */
+        if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp)  {
+            sr_icmp_hdr_t* icmp_header = (sr_icmp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
+            /* client sending icmp echo request to server */
+            if (icmp_header->icmp_type == 8) {
+                printf("Forwarding a type 8 icmp request \n");
+                sr_icmp_t0_hdr_t* icmp = (sr_icmp_t0_hdr_t*) icmp_header;
+                print_hdr_icmp((uint8_t*)icmp);
+
+                struct sr_nat_mapping* mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
+                 icmp->id, nat_mapping_icmp);
+                if (!mapping) {
+                    printf("INSERTING MAPPING FOR ID: %d\n", ntohs(icmp->id));
+                    mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, icmp->id, nat_mapping_icmp);
+                }
+
+                printf("MAPPING AUX_EXT IS ID: %d\n", ntohs(mapping->aux_ext));
+
+                icmp->id = mapping->aux_ext;
+
+                free(mapping);
+
+                /* rewrite source ip as eth2 */
+                struct sr_if* iface = sr_get_interface(sr, ext_iface_name);
+                ip_packet->ip_src = iface->ip;
+                printf("NEW SOURCE IP: "); 
+                print_hdr_ip((uint8_t*)ip_packet);
+
+                memcpy((uint8_t*)ip_packet + 4*ip_packet->ip_hl, icmp, sizeof(sr_icmp_t0_hdr_t));
+
+                printf("FORWARDING THIS NEW ID: %d SEQ: %d\n", ntohs(icmp->id), ntohs(icmp->sequence_num));
+            }
+        } else if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_tcp) {
+            /* it's a tcp packet */
+            sr_tcp_hdr_t* tcp_header = (sr_tcp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
+            printf("FORWARDING RECIEVED TCP FROM CLIENT: src port: %d dest_port: %d seq no: %d ack no: %d flags: %d\n",
+                ntohs(tcp_header->source_port), ntohs(tcp_header->dest_port), ntohs(tcp_header->seq_number),
+                ntohs(tcp_header->ack_number), tcp_header->flags);
+
+            /* TODO lookup external for inbound syn from server that is on 6 sec wait */
+            struct sr_nat_mapping* mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
+             tcp_header->source_port, nat_mapping_tcp);
+            struct sr_nat_connection* conn;
+
+            if (!mapping) {
+                printf("INSERTING TCP MAPPING FOR PORT: %d\n", ntohs(tcp_header->source_port));
+                mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
+                conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
+                 ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
+            } else {
+                conn = sr_nat_lookup_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
+                 ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, OUTBOUND_SENT_SYN);
+            }
+
+            tcp_header->source_port = mapping->aux_ext;
+
+            /* rewrite source ip as eth2 */
+            struct sr_if* iface = sr_get_interface(sr, ext_iface_name);
+            ip_packet->ip_src = iface->ip;
+
+            print_hdr_ip((uint8_t*)ip_packet);
+            printf("TCP FORWARDING THIS NEW ID: %d\n", ntohs(tcp_header->source_port));
+
+            memcpy((uint8_t*)ip_packet + 4*ip_packet->ip_hl, tcp_header, sizeof(sr_tcp_hdr_t));
+        }
+    }
+}
+
+int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr_t* ip_packet) {
+    sr_tcp_hdr_t* tcp_header = (sr_tcp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
+    printf(" INTERFACE --eth1 eth2--- RECIEVED TCP: src port: %d dest_port: %d seq no: %d ack no: %d flags: %d\n",
+        ntohs(tcp_header->source_port), ntohs(tcp_header->dest_port), ntohs(tcp_header->seq_number),
+        ntohs(tcp_header->ack_number), tcp_header->flags);
+
+    struct sr_nat_mapping* mapping = sr_nat_lookup_external(sr->nat_instance, tcp_header->source_port, nat_mapping_tcp);
+    uint32_t target_ip;
+
+    if (mapping) {
+        tcp_header->dest_port = mapping->aux_int;
+        tcp_header->check_sum = 0;
+        target_ip = mapping->ip_int;
+
+        sr_nat_tcp_state state_to_search;
+        sr_nat_tcp_state new_state;
+        if (tcp_header->flags == (FLAG_SYN + FLAG_ACK)) {
+            state_to_search = OUTBOUND_SENT_SYN;
+            new_state = ESTABLISHED;
+        } else if (tcp_header->flags == (FLAG_ACK)) {
+            state_to_search = INBOUND_SYN;
+            new_state = ESTABLISHED;
+        } else {
+            /* if (tcp_header->flags % 2 == 1) */
+            state_to_search = ESTABLISHED;
+            new_state = LISTEN;
+        }
+
+        struct sr_nat_connection* conn = sr_nat_lookup_tcp_connection(sr->nat_instance, mapping->aux_int, 0, 
+            mapping->ip_int, mapping->aux_int, ip_packet->ip_src, state_to_search);
+
+        if (conn) {
+            if (conn->state == CLOSED) {
+                /* unsolicted syn expired after 6 seconds and connection is closed. */
+                return 0;
+            }
+            update_sr_nat_tcp_connection(sr->nat_instance, mapping, ip_packet->ip_src, tcp_header->source_port, new_state);
+        } else {
+            printf(" ***--------- NO CONNECTION FOUND, DROPPING THIS TCP\n");
+            return 0;
+        }
+    } else if (tcp_header->flags == FLAG_SYN) {
+        /* new connection SYN being initiated by server */
+            /* setup connection and wait for client to send SYN */
+        mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
+        sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
+         ip_packet->ip_dst, tcp_header->dest_port, INBOUND_SYN_UNSOLIC);
+        return 1;
+    }
+
+    /* calc check sums*/
+    ip_packet->ip_sum = 0;
+    tcp_header->check_sum = 0;
+    ip_packet->ip_len = htons(4*ip_packet->ip_hl + sizeof(sr_tcp_hdr_t));
+    ip_packet->ip_sum = cksum(ip_packet, 4*ip_packet->ip_hl);
+
+    uint16_t len = ntohs(ip_packet->ip_len);
+    tcp_header->check_sum = cksum(tcp_header, len - 4*ip_packet->ip_hl);
+
+
+    /* construct packet to send */ 
+    uint8_t* packet_to_send = malloc(len);
+    memcpy(packet_to_send, ip_packet, 4*ip_packet->ip_hl);
+    memcpy(packet_to_send + 4*ip_packet->ip_hl, tcp_header, len - 4*ip_packet->ip_hl);
+
+    send_packet(sr, packet_to_send, len, target_ip, ethertype_ip, 0);
+    return 1;
+}
+
 /*---------------------------------------------------------------------
  * Method: sr_handlepacket(uint8_t* p,char* interface)
  * Scope:  Global
@@ -329,15 +473,25 @@ void sr_handlepacket(struct sr_instance* sr,
         if (checksum != expected_checksum) {
             return;
         }
+
         print_hdr_ip((uint8_t*)ip_packet);
+
         if(is_in_interface_lst(sr, ip_packet->ip_dst)) {
-            /* its me, then check if ICMP request */
+            /* reached an eth interface in router, then check if ICMP request */
 
             if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp)  {
                 /* send echo reply */
                 make_and_send_icmp_echo(sr, ip_packet);
+            } else if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_tcp) {
+                
+                if (sr->nat_instance) {
+                    if (nat_translate_from_server(sr, packet, ip_packet) == 0) {
+                        make_and_send_icmp(sr, ip_packet, 3, 3);                        
+                    }
+                }
+
             } else {
-                /* send icmp port unreachable since its udp/tcp packet */
+                /* send icmp port unreachable since its udp or other packet */
                 make_and_send_icmp(sr, ip_packet, 3, 3);
             }
 
@@ -354,55 +508,29 @@ void sr_handlepacket(struct sr_instance* sr,
                 return;
             }
 
-            int icmp_modified = 0;
             if (sr->nat_instance) {
-                struct sr_rt* rtable_entry = longest_prefix_match(sr, ip_packet->ip_src);
-                /* if it's sourced from the client behind nat we need to do a nat translation for icmp 0 */
-                if (strcmp(rtable_entry->interface, int_iface_name) == 0) {
-                    if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp)  {
-                        sr_icmp_hdr_t* icmp_header = (sr_icmp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
-                        /* client sending icmp echo request to server */
-                        if (icmp_header->icmp_type == 8) {
-                            printf("Forwarding a type 8 icmp request \n");
-                            sr_icmp_t0_hdr_t* icmp = (sr_icmp_t0_hdr_t*) icmp_header;
-                            print_hdr_icmp((uint8_t*)icmp);
-
-                            struct sr_nat_mapping* mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src, icmp->id, nat_mapping_icmp);
-                            if (!mapping) {
-                                printf("INSERTING MAPPING FOR ID: %d\n", ntohs(icmp->id));
-                                mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, icmp->id, nat_mapping_icmp);
-                            }
-
-                            printf("MAPPING AUX_EXT IS ID: %d\n", ntohs(mapping->aux_ext));
-
-                            icmp->id = mapping->aux_ext;
-
-                            /* rewrite source ip as eth2 */
-                            struct sr_if* iface = sr_get_interface(sr, ext_iface_name);
-                            ip_packet->ip_src = iface->ip;
-                            printf("NEW SOURCE IP: "); 
-                            print_hdr_ip((uint8_t*)ip_packet);
-
-                            memcpy((uint8_t*)ip_packet + 4*ip_packet->ip_hl, icmp, sizeof(sr_icmp_t0_hdr_t));
-
-                            printf("FORWARDING THIS NEW ID: %d SEQ: %d\n", ntohs(icmp->id), ntohs(icmp->sequence_num));
-                            icmp_modified = 1;
-                        }
-                    }
-                }
+                nat_translate_forwarding(sr, packet, ip_packet);                
             }
             
-            if (icmp_modified) {
+            /* reset checksums if icmp or tcp checksum if they were modified */
+            if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp) {
                 sr_icmp_t0_hdr_t* icmp_header = (sr_icmp_t0_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
                 icmp_header->icmp_sum = 0;
+            } else if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_tcp) {
+                sr_tcp_hdr_t* tcp_header = (sr_tcp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
+                tcp_header->check_sum = 0;
             }
+
             ip_packet->ip_sum = 0;
             ip_packet->ip_sum = cksum(ip_packet, ip_packet->ip_hl*4);
 
-            /* recalc icmp checksum if it was modified */
-            if (icmp_modified)  {
+            /* recalculate icmp and tcp checksum if it was modified */
+            if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_icmp)  {
                 sr_icmp_t0_hdr_t* icmp_header = (sr_icmp_t0_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
                 icmp_header->icmp_sum = cksum(icmp_header, ntohs(ip_packet->ip_len) - 4*ip_packet->ip_hl);
+            } else if (ip_protocol(packet + sizeof(struct sr_ethernet_hdr)) == (uint8_t)ip_protocol_tcp) {
+                sr_tcp_hdr_t* tcp_header = (sr_tcp_hdr_t*) (packet + sizeof(struct sr_ethernet_hdr) + 4*ip_packet->ip_hl);
+                tcp_header->check_sum = cksum(tcp_header, ntohs(ip_packet->ip_len) - 4*ip_packet->ip_hl);
             }
 
             uint8_t* ip_packet_copy_to_fwd = malloc(len_packet);
