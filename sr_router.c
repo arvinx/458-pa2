@@ -158,7 +158,7 @@ void make_and_send_icmp_echo(struct sr_instance* sr, sr_ip_hdr_t* ip_packet) {
             icmp_header->id = mapping->aux_int;
             free(mapping);
         }
-    } 
+    }
 
     ip_packet->ip_len = htons(4*ip_packet->ip_hl + sizeof(sr_icmp_t0_hdr_t));
     ip_packet->ip_sum = 0;
@@ -296,7 +296,6 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
             if (icmp_header->icmp_type == 8) {
                 printf("Forwarding a type 8 icmp request \n");
                 sr_icmp_t0_hdr_t* icmp = (sr_icmp_t0_hdr_t*) icmp_header;
-                print_hdr_icmp((uint8_t*)icmp);
 
                 struct sr_nat_mapping* mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
                  icmp->id, nat_mapping_icmp);
@@ -315,7 +314,6 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                 struct sr_if* iface = sr_get_interface(sr, ext_iface_name);
                 ip_packet->ip_src = iface->ip;
                 printf("NEW SOURCE IP: "); 
-                print_hdr_ip((uint8_t*)ip_packet);
 
                 memcpy((uint8_t*)ip_packet + 4*ip_packet->ip_hl, icmp, sizeof(sr_icmp_t0_hdr_t));
 
@@ -329,6 +327,7 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                 ntohs(tcp_header->ack_number), tcp_header->flags);
 
             /* TODO lookup external for inbound syn from server that is on 6 sec wait */
+            
             struct sr_nat_mapping* mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
              tcp_header->source_port, nat_mapping_tcp);
             struct sr_nat_connection* conn;
@@ -338,10 +337,10 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                 mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
                 conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
                  ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
-            } else {
+            } /*else {
                 conn = sr_nat_lookup_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
-                 ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, OUTBOUND_SENT_SYN);
-            }
+                 ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, ESTABLISHED);
+            }*/
 
             tcp_header->source_port = mapping->aux_ext;
 
@@ -349,7 +348,6 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
             struct sr_if* iface = sr_get_interface(sr, ext_iface_name);
             ip_packet->ip_src = iface->ip;
 
-            print_hdr_ip((uint8_t*)ip_packet);
             printf("TCP FORWARDING THIS NEW ID: %d\n", ntohs(tcp_header->source_port));
 
             memcpy((uint8_t*)ip_packet + 4*ip_packet->ip_hl, tcp_header, sizeof(sr_tcp_hdr_t));
@@ -364,11 +362,11 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
         ntohs(tcp_header->ack_number), tcp_header->flags);
 
     struct sr_nat_mapping* mapping = sr_nat_lookup_external(sr->nat_instance, tcp_header->dest_port, nat_mapping_tcp);
-    uint32_t target_ip;
+    uint32_t target_ip = 0;
 
     if (mapping) {
+        printf(" TRANSLATE FROM SERVER FOUND MAPPING last update %ld \n", mapping->last_updated);
         tcp_header->dest_port = mapping->aux_int;
-        tcp_header->check_sum = 0;
         target_ip = mapping->ip_int;
 
         sr_nat_tcp_state state_to_search;
@@ -377,23 +375,28 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
             state_to_search = OUTBOUND_SENT_SYN;
             new_state = ESTABLISHED;
         } else if (tcp_header->flags == (FLAG_ACK)) {
-            state_to_search = INBOUND_SYN;
+            state_to_search = ESTABLISHED;
             new_state = ESTABLISHED;
-        } else {
-            /* if (tcp_header->flags % 2 == 1) */
+        } else if (tcp_header->flags % 2 == 1) {
             state_to_search = ESTABLISHED;
             new_state = LISTEN;
+        } else {
+            /* if (tcp_header->flags % 2 == 1) FIN */
+            state_to_search = ESTABLISHED;
+            new_state = ESTABLISHED;
         }
-
-        struct sr_nat_connection* conn = sr_nat_lookup_tcp_connection(sr->nat_instance, mapping->aux_int, 0, 
-            mapping->ip_int, mapping->aux_int, ip_packet->ip_src, state_to_search);
+        printf(" SEARCHING FOR MAPPING WITH STATE %d\n", state_to_search);
+        struct sr_nat_connection* conn = sr_nat_lookup_tcp_connection(sr->nat_instance, mapping->aux_ext, 0, 
+            ip_packet->ip_src, tcp_header->source_port, mapping->ip_int, state_to_search);
 
         if (conn) {
+            printf(" FOUND CONNECTION in state %d\n", conn->state);
             if (conn->state == CLOSED) {
                 /* unsolicted syn expired after 6 seconds and connection is closed. */
                 return 0;
             }
-            update_sr_nat_tcp_connection(sr->nat_instance, mapping, ip_packet->ip_src, tcp_header->source_port, new_state);
+            update_sr_nat_tcp_connection(sr->nat_instance, mapping->aux_ext, 0, ip_packet->ip_src,
+             tcp_header->source_port, mapping->ip_int, new_state);
         } else {
             printf(" ***--------- NO CONNECTION FOUND, DROPPING THIS TCP\n");
             return 0;
@@ -401,16 +404,18 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
     } else if (tcp_header->flags == FLAG_SYN) {
         /* new connection SYN being initiated by server */
             /* setup connection and wait for client to send SYN */
+        printf(" ****** -------- $$$$$$$$ NEW CONNECTION BEING INITIATED FROM SERVER \n");
         mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
         sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
          ip_packet->ip_dst, tcp_header->dest_port, INBOUND_SYN_UNSOLIC);
         return 1;
     }
 
+    ip_packet->ip_dst = mapping->ip_int;
+
     /* calc check sums*/
     ip_packet->ip_sum = 0;
     tcp_header->check_sum = 0;
-    ip_packet->ip_len = htons(4*ip_packet->ip_hl + sizeof(sr_tcp_hdr_t));
     ip_packet->ip_sum = cksum(ip_packet, 4*ip_packet->ip_hl);
 
     uint16_t len = ntohs(ip_packet->ip_len);
@@ -421,7 +426,7 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
     uint8_t* packet_to_send = malloc(len);
     memcpy(packet_to_send, ip_packet, 4*ip_packet->ip_hl);
     memcpy(packet_to_send + 4*ip_packet->ip_hl, tcp_header, len - 4*ip_packet->ip_hl);
-
+    print_hdr_ip(packet_to_send);
     send_packet(sr, packet_to_send, len, target_ip, ethertype_ip, 0);
     return 1;
 }
@@ -473,8 +478,6 @@ void sr_handlepacket(struct sr_instance* sr,
         if (checksum != expected_checksum) {
             return;
         }
-
-        print_hdr_ip((uint8_t*)ip_packet);
 
         if(is_in_interface_lst(sr, ip_packet->ip_dst)) {
             /* reached an eth interface in router, then check if ICMP request */

@@ -91,7 +91,7 @@ struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
 struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat,
   uint32_t ip_int, uint16_t aux_int, uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state);
 
-int update_sr_nat_tcp_connection(struct sr_nat *nat, struct sr_nat_mapping *mapping,
-  uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state new_state);
+int update_sr_nat_tcp_connection(struct sr_nat *nat, uint16_t aux_ext, uint16_t aux_int,
+  uint32_t ext_ip, uint16_t ext_port, uint32_t int_ip, sr_nat_tcp_state new_state);
 
 #endif
