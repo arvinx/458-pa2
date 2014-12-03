@@ -85,15 +85,6 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat,
   uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type );
 
 
-/* returns pointer to mapping, useful for calling insert_tcp_connection */
-struct sr_nat_mapping *sr_nat_lookup_external_pointer(struct sr_nat *nat,
-  uint16_t aux_ext, sr_nat_mapping_type type);
-
-/* returns pointer to mapping, useful for calling insert_tcp_connection */
-struct sr_nat_mapping *sr_nat_lookup_internal_pointer(struct sr_nat *nat,
-  uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type);
-
-
 struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
   uint16_t aux_ext, uint16_t aux_int, uint32_t dst_ip, uint16_t dst_port, uint32_t src_ip, sr_nat_tcp_state state);
 

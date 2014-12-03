@@ -363,7 +363,7 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
         ntohs(tcp_header->source_port), ntohs(tcp_header->dest_port), ntohs(tcp_header->seq_number),
         ntohs(tcp_header->ack_number), tcp_header->flags);
 
-    struct sr_nat_mapping* mapping = sr_nat_lookup_external(sr->nat_instance, tcp_header->source_port, nat_mapping_tcp);
+    struct sr_nat_mapping* mapping = sr_nat_lookup_external(sr->nat_instance, tcp_header->dest_port, nat_mapping_tcp);
     uint32_t target_ip;
 
     if (mapping) {
