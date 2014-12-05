@@ -91,8 +91,9 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
                 while (conns != NULL) {
                     if ((conns->state == ESTABLISHED && 
                             (difftime(curtime, conns->last_used) > nat->tcp_established_idle_timeout))
-                        || (conns->state == LISTEN && 
-                            (difftime(curtime, conns->last_used) > nat->tcp_transitionary_idle_timeout))) {
+                        || ((conns->state == LISTEN || conns->state == OUTBOUND_SENT_SYN) && 
+                            (difftime(curtime, conns->last_used) > nat->tcp_transitionary_idle_timeout))
+                        || conns->state == CLOSED) {
                         printf("@@@REMOVING CONNECTION\n");
                         
                         if (!conns_prev) {
@@ -319,7 +320,7 @@ struct sr_nat_mapping *sr_nat_lookup_internal(struct sr_nat *nat,
  Actually returns a copy to the new mapping, for thread safety.
  */
 struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat,
-    uint32_t ip_int, uint16_t aux_int, sr_nat_mapping_type type ) {
+    uint32_t ip_int, uint16_t aux_int, uint16_t aux_ext, sr_nat_mapping_type type ) {
     
     pthread_mutex_lock(&(nat->lock));
     
@@ -327,7 +328,11 @@ struct sr_nat_mapping *sr_nat_insert_mapping(struct sr_nat *nat,
     
     mapping->ip_int = ip_int;
     mapping->aux_int = aux_int;
-    mapping->aux_ext = htons(rand() % 64511 + 1024);
+    if (aux_ext != 0) {
+        mapping->aux_ext = aux_ext;
+    } else {
+        mapping->aux_ext = htons(rand() % 64511 + 1024);        
+    }
     printf("Made random aux_ext: %d\n", ntohs(mapping->aux_ext));
     mapping->last_updated = time(NULL);
     mapping->type = type;

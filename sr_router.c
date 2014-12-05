@@ -301,7 +301,7 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                  icmp->id, nat_mapping_icmp);
                 if (!mapping) {
                     printf("INSERTING MAPPING FOR ID: %d\n", ntohs(icmp->id));
-                    mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, icmp->id, nat_mapping_icmp);
+                    mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, icmp->id, 0, nat_mapping_icmp);
                 }
 
                 printf("MAPPING AUX_EXT IS ID: %d\n", ntohs(mapping->aux_ext));
@@ -326,20 +326,33 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                 ntohs(tcp_header->source_port), ntohs(tcp_header->dest_port), ntohs(tcp_header->seq_number),
                 ntohs(tcp_header->ack_number), tcp_header->flags);
 
-            /* TODO lookup external for inbound syn from server that is on 6 sec wait */
-            
-            struct sr_nat_mapping* mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
-             tcp_header->source_port, nat_mapping_tcp);
+            struct sr_nat_mapping* mapping;
             struct sr_nat_connection* conn;
-
-            if (!mapping) {
-                printf("INSERTING TCP MAPPING FOR PORT: %d\n", ntohs(tcp_header->source_port));
-                mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
+            struct sr_nat_mapping* mapping_inbound_syn = 
+                sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_dst, tcp_header->dest_port, nat_mapping_tcp);
+            if (mapping_inbound_syn) {
+                /* look for inbound syn from server that is on 6 sec wait */
+                conn = mapping_inbound_syn->conns;
+                sr_nat_update_tcp_connection(sr->nat_instance, 0, tcp_header->dest_port, ip_packet->ip_src, 
+                    tcp_header->source_port, ip_packet->ip_src, CLOSED);
+                printf("REMAPPING INSERTING TCP MAPPING FOR PORT: %d\n", ntohs(tcp_header->source_port));
+                mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src,
+                    tcp_header->source_port, conn->ext_port, nat_mapping_tcp);
                 conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
                  ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
             } else {
-                sr_nat_update_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
-                 ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, tcp_header->flags);
+                mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
+                 tcp_header->source_port, nat_mapping_tcp);
+
+                if (!mapping) {
+                    printf("INSERTING TCP MAPPING PORT: %d\n", ntohs(tcp_header->source_port));
+                    mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, 0, nat_mapping_tcp);
+                    conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
+                     ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
+                } else {
+                    sr_nat_update_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
+                     ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, tcp_header->flags);
+                }                
             }
 
             tcp_header->source_port = mapping->aux_ext;
@@ -380,10 +393,13 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
     } else if (tcp_header->flags == FLAG_SYN) {
         /* new connection SYN being initiated by server */
             /* setup connection and wait for client to send SYN */
-        printf(" ****** -------- $$$$$$$$ NEW CONNECTION BEING INITIATED FROM SERVER \n");
-        mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
-        sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
-         ip_packet->ip_dst, tcp_header->dest_port, INBOUND_SYN_UNSOLIC);
+        mapping = sr_nat_lookup_external(sr->nat_instance, tcp_header->source_port, nat_mapping_tcp);
+        if (!mapping) {
+            printf(" ****** NEW CONNECTION BEING INITIATED FROM SERVER \n");
+            mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, 0, nat_mapping_tcp);
+            sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
+             ip_packet->ip_dst, tcp_header->dest_port, INBOUND_SYN_UNSOLIC);       
+        }
         return 1;
     }
 
