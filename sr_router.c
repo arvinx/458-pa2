@@ -337,10 +337,10 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                 mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, nat_mapping_tcp);
                 conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
                  ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
-            } /*else {
-                conn = sr_nat_lookup_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
-                 ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, ESTABLISHED);
-            }*/
+            } else {
+                sr_nat_update_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
+                 ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, tcp_header->flags);
+            }
 
             tcp_header->source_port = mapping->aux_ext;
 
@@ -369,38 +369,14 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
         tcp_header->dest_port = mapping->aux_int;
         target_ip = mapping->ip_int;
 
-        sr_nat_tcp_state state_to_search;
-        sr_nat_tcp_state new_state;
-        if (tcp_header->flags == (FLAG_SYN + FLAG_ACK)) {
-            state_to_search = OUTBOUND_SENT_SYN;
-            new_state = ESTABLISHED;
-        } else if (tcp_header->flags == (FLAG_ACK)) {
-            state_to_search = ESTABLISHED;
-            new_state = ESTABLISHED;
-        } else if (tcp_header->flags % 2 == 1) {
-            state_to_search = ESTABLISHED;
-            new_state = LISTEN;
-        } else {
-            /* if (tcp_header->flags % 2 == 1) FIN */
-            state_to_search = ESTABLISHED;
-            new_state = ESTABLISHED;
-        }
-        printf(" SEARCHING FOR MAPPING WITH STATE %d\n", state_to_search);
-        struct sr_nat_connection* conn = sr_nat_lookup_tcp_connection(sr->nat_instance, mapping->aux_ext, 0, 
-            ip_packet->ip_src, tcp_header->source_port, mapping->ip_int, state_to_search);
 
-        if (conn) {
-            printf(" FOUND CONNECTION in state %d\n", conn->state);
-            if (conn->state == CLOSED) {
-                /* unsolicted syn expired after 6 seconds and connection is closed. */
-                return 0;
-            }
-            update_sr_nat_tcp_connection(sr->nat_instance, mapping->aux_ext, 0, ip_packet->ip_src,
-             tcp_header->source_port, mapping->ip_int, new_state);
-        } else {
-            printf(" ***--------- NO CONNECTION FOUND, DROPPING THIS TCP\n");
-            return 0;
+        int success = sr_nat_update_tcp_connection(sr->nat_instance, mapping->aux_ext, 0, ip_packet->ip_src,
+                 tcp_header->source_port, mapping->ip_int, tcp_header->flags);
+        if (!success) {
+            printf(" ***--------- %d (2==NO CONNECTION FOUND or 0==DROPPING THIS TCP)\n", success);
+            return success;            
         }
+        
     } else if (tcp_header->flags == FLAG_SYN) {
         /* new connection SYN being initiated by server */
             /* setup connection and wait for client to send SYN */

@@ -75,16 +75,66 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
         struct sr_nat_mapping *cur = nat->mappings;
         struct sr_nat_mapping *prev = NULL;
 
-     
+        while (cur != NULL) {
+            if ((difftime(curtime, cur->last_updated) > nat->icmp_query_timeout) && cur->type == nat_mapping_icmp) {
+                if (prev == NULL) {
+                    nat->mappings = cur->next;
+                } else {
+                    prev->next = cur->next;
+                }
+                break;
+            } else if (cur->type == nat_mapping_tcp) {
+                struct sr_nat_connection *conns = cur->conns;
+                struct sr_nat_connection *conns_prev = NULL;
+
+                /* clean up connections */
+                while (conns != NULL) {
+                    if ((conns->state == ESTABLISHED && 
+                            (difftime(curtime, conns->last_used) > nat->tcp_established_idle_timeout))
+                        || (conns->state == LISTEN && 
+                            (difftime(curtime, conns->last_used) > nat->tcp_transitionary_idle_timeout))) {
+                        printf("@@@REMOVING CONNECTION\n");
+                        
+                        if (!conns_prev) {
+                            cur->conns = conns->next;
+                        } else {
+                            conns_prev->next = conns->next;
+                        }
+
+                    } else if (conns->state == INBOUND_SYN_UNSOLIC &&
+                                (difftime(curtime, conns->last_used) > 6)) {
+                        conns->state = CLOSED;
+                    }
+                    conns_prev = conns;
+                    conns = conns->next;
+                }
+
+                /* clear mapping if no connections left */
+                if (cur->conns == NULL) {
+                    printf("@@@REMOVING MAPPING\n");
+
+                    if (prev == NULL) {
+                        nat->mappings = cur->next;
+                    } else {
+                        prev->next = cur->next;
+                    }
+                    break;
+                }
+            }
+            prev = cur;
+            cur = cur->next;
+        }   
+
 
         pthread_mutex_unlock(&(nat->lock));
     }
     return NULL;
 }
 
-/* assumes mapping is a pointer to the actual mapping in sr_nat strcut */
-int update_sr_nat_tcp_connection(struct sr_nat *nat, uint16_t aux_ext, uint16_t aux_int,
-    uint32_t ext_ip, uint16_t ext_port, uint32_t int_ip, sr_nat_tcp_state new_state) {
+/* assumes mapping is a pointer to the actual mapping in sr_nat strcut.
+    returns 0 on failure to find a connection, 1 on success, and 2 if a connection was found but no update was done  */
+int sr_nat_update_tcp_connection(struct sr_nat *nat, uint16_t aux_ext, uint16_t aux_int,
+    uint32_t ext_ip, uint16_t ext_port, uint32_t int_ip, int flags) {
 
     pthread_mutex_lock(&(nat->lock));
 
@@ -106,11 +156,36 @@ int update_sr_nat_tcp_connection(struct sr_nat *nat, uint16_t aux_ext, uint16_t 
 
     while (conn) {
         if (conn->ext_ip == ext_ip && conn->ext_port == ext_port) {
-            printf(" update_sr_nat_tcp_connection UPDATING STATE TO %d\n", new_state);
-            conn->state = new_state;
-            conn->last_used = time(NULL);
-            pthread_mutex_unlock(&(nat->lock));
-            return 1;
+            printf("ATTEMPTING TO UPDATE flags: %d conn->state: %d close_step %d\n", flags, conn->state, conn->close_step);
+            sr_nat_tcp_state new_state;
+            int update = 0;
+            if ((flags == (FLAG_SYN + FLAG_ACK)) && conn->state == OUTBOUND_SENT_SYN) {
+                new_state = ESTABLISHED;
+                update = 1;
+            } else if ((flags == (FLAG_FIN + FLAG_ACK)) && conn->state == LISTEN && conn->close_step == 1) {
+                conn->close_step = 2;
+                new_state = LISTEN;
+                update = 1;
+            } else if ((flags % 2 == 1) && conn->state == ESTABLISHED && conn->close_step == 0) {
+                conn->close_step = 1;
+                new_state = LISTEN;
+                update = 1;
+            } else if (flags == FLAG_ACK && conn->state == LISTEN && conn->close_step == 2) {
+                conn->close_step = 0;
+                new_state = CLOSED;
+                update = 1;
+            }
+
+            if (update) {
+                printf("    ^^^^^^^^^^^^^^^^       update_sr_nat_tcp_connection UPDATING STATE TO %d\n", new_state);
+                conn->state = new_state;
+                conn->last_used = time(NULL);
+                pthread_mutex_unlock(&(nat->lock));
+                return 1;
+            } else {
+                pthread_mutex_unlock(&(nat->lock));
+                return 2;                
+            }
         }
         conn = conn->next;
     }
@@ -169,6 +244,7 @@ struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, uint3
     conn->last_used = time(NULL);
     conn->ext_port = ext_port;
     conn->ext_ip = ext_ip;
+    conn->close_step = 0;
 
     /* find mapping */
     struct sr_nat_mapping *mapping = nat->mappings;
