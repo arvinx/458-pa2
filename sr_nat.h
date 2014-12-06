@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <time.h>
 #include <pthread.h>
+#include "sr_protocol.h"
 
 /* TCP FLAGS */
 #define FLAG_FIN    1
@@ -33,7 +34,8 @@ struct sr_nat_connection {
   time_t last_used;
   uint32_t ext_ip; /* server ip */
   uint16_t ext_port; /* server port */
-  int close_step;
+  int close_step; /* count the step number in closing connection. 0 not starter, 1 FIN, 2 FIN/ACK, 3 ACK complete */
+  uint8_t* ip_packet; /* optional to keep ip packet, useful for sending icmp to server for inbound syn */
   struct sr_nat_connection *next;
 };
 
@@ -51,6 +53,7 @@ struct sr_nat_mapping {
 struct sr_nat {
   /* add any fields here */
   struct sr_nat_mapping *mappings;
+  struct sr_instance *sr; /* point back to parent struct */
 
   /* threading */
   pthread_mutex_t lock;
@@ -90,7 +93,7 @@ struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat,
   uint16_t aux_ext, uint16_t aux_int, uint32_t dst_ip, uint16_t dst_port, uint32_t src_ip, sr_nat_tcp_state state);
 
 struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat,
-  uint32_t ip_int, uint16_t aux_int, uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state);
+  uint32_t ip_int, uint16_t aux_int, uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state, sr_ip_hdr_t* ip_packet);
 
 int sr_nat_update_tcp_connection(struct sr_nat *nat,
   uint16_t aux_ext, uint16_t aux_int, uint32_t ext_ip, uint16_t ext_port, uint32_t int_ip, int flags);

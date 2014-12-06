@@ -180,6 +180,7 @@ int main(int argc, char **argv)
         sr_nat_instance.icmp_query_timeout = icmp_query_timeout;
         sr_nat_instance.tcp_transitionary_idle_timeout = tcp_transitionary_idle_timeout;
         sr_nat_instance.tcp_established_idle_timeout = tcp_established_idle_timeout;
+        sr_nat_instance.sr = &sr;
         sr_nat_init(&sr_nat_instance);
         sr.nat_instance = &sr_nat_instance;
     } else {

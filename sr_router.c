@@ -339,7 +339,7 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                 mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src,
                     tcp_header->source_port, conn->ext_port, nat_mapping_tcp);
                 conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
-                 ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
+                 ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN, NULL);
             } else {
                 mapping = sr_nat_lookup_internal(sr->nat_instance, ip_packet->ip_src,
                  tcp_header->source_port, nat_mapping_tcp);
@@ -348,7 +348,7 @@ void nat_translate_forwarding(struct sr_instance* sr, uint8_t * packet, sr_ip_hd
                     printf("INSERTING TCP MAPPING PORT: %d\n", ntohs(tcp_header->source_port));
                     mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, 0, nat_mapping_tcp);
                     conn = sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
-                     ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN);
+                     ip_packet->ip_dst, tcp_header->dest_port, OUTBOUND_SENT_SYN, NULL);
                 } else {
                     sr_nat_update_tcp_connection(sr->nat_instance, 0, tcp_header->source_port,
                      ip_packet->ip_dst, tcp_header->dest_port, ip_packet->ip_src, tcp_header->flags);
@@ -386,19 +386,20 @@ int nat_translate_from_server(struct sr_instance* sr, uint8_t* packet, sr_ip_hdr
         int success = sr_nat_update_tcp_connection(sr->nat_instance, mapping->aux_ext, 0, ip_packet->ip_src,
                  tcp_header->source_port, mapping->ip_int, tcp_header->flags);
         if (!success) {
-            printf(" ***--------- %d (2==NO CONNECTION FOUND or 0==DROPPING THIS TCP)\n", success);
+            printf(" ***--------- CONNECTION FOUND DROPPING THIS TCP\n");
             return success;            
         }
         
     } else if (tcp_header->flags == FLAG_SYN) {
         /* new connection SYN being initiated by server */
-            /* setup connection and wait for client to send SYN */
         mapping = sr_nat_lookup_external(sr->nat_instance, tcp_header->source_port, nat_mapping_tcp);
+        /* check if it's a new syn or same server/port sending multiple syns */
         if (!mapping) {
-            printf(" ****** NEW CONNECTION BEING INITIATED FROM SERVER \n");
-            mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port, 0, nat_mapping_tcp);
+            printf(" ****** ATTEMPTING NEW CONNECTION - INITIATED FROM SERVER \n");
+            mapping = sr_nat_insert_mapping(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
+                tcp_header->source_port, nat_mapping_tcp);
             sr_nat_insert_tcp_connection(sr->nat_instance, ip_packet->ip_src, tcp_header->source_port,
-             ip_packet->ip_dst, tcp_header->dest_port, INBOUND_SYN_UNSOLIC);       
+                ip_packet->ip_dst, tcp_header->dest_port, INBOUND_SYN_UNSOLIC, ip_packet);
         }
         return 1;
     }

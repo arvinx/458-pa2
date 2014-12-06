@@ -8,6 +8,9 @@
 #include <arpa/inet.h>
 
 #include "sr_nat.h"
+#include "sr_router.h"
+#include "sr_utils.h"
+
 
 int sr_nat_init(struct sr_nat *nat) { /* Initializes the nat */
     
@@ -65,6 +68,45 @@ int sr_nat_destroy(struct sr_nat *nat) {  /* Destroys the nat (free memory) */
     
 }
 
+/* helper method to construct icmp requests that are not echo */
+void sr_nat_make_and_send_icmp(struct sr_instance* sr, sr_ip_hdr_t* ip_packet, int icmp_type, int icmp_code) {
+
+    struct sr_icmp_t3_hdr icmp_header;
+    struct sr_ip_hdr* ip_header = 
+    (struct sr_ip_hdr*) malloc(sizeof(struct sr_ip_hdr));
+
+    icmp_header.icmp_type = icmp_type;
+    icmp_header.icmp_code = icmp_code;
+    icmp_header.unused = 0;
+    memcpy(icmp_header.data, ip_packet, ICMP_DATA_SIZE);
+
+    ip_header->ip_dst = ip_packet->ip_src;
+    ip_header->ip_id = ip_packet->ip_id;
+    ip_header->ip_v = 4;
+    ip_header->ip_p = ip_protocol_icmp;
+    ip_header->ip_tos = 0;
+    ip_header->ip_off = htons(IP_DF);
+    ip_header->ip_ttl = 50;
+
+    ip_header->ip_src = ip_packet->ip_dst;
+
+    unsigned int len = 4*ip_header->ip_hl + sizeof(struct sr_icmp_t3_hdr);
+    ip_header->ip_len = htons(len);
+    ip_header->ip_sum = 0;
+    ip_header->ip_sum = cksum(ip_header, 4*ip_header->ip_hl);
+
+    icmp_header.icmp_sum = 0;
+    icmp_header.icmp_sum = cksum(&icmp_header, sizeof(struct sr_icmp_t3_hdr));
+
+    uint8_t* packet_to_send = malloc(len);
+    memcpy(packet_to_send, ip_header, 4*ip_header->ip_hl);
+    memcpy(packet_to_send + 4*ip_header->ip_hl, &icmp_header, len - 4*ip_header->ip_hl);
+
+    print_hdr_ip((uint8_t*)ip_packet);
+
+    send_packet(sr, packet_to_send, len, ip_packet->ip_src, ethertype_ip, 1);
+}
+
 void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
     struct sr_nat *nat = (struct sr_nat *)nat_ptr;
     while (1) {
@@ -104,6 +146,7 @@ void *sr_nat_timeout(void *nat_ptr) {  /* Periodic Timout handling */
 
                     } else if (conns->state == INBOUND_SYN_UNSOLIC &&
                                 (difftime(curtime, conns->last_used) > 6)) {
+                        sr_nat_make_and_send_icmp(nat->sr, (sr_ip_hdr_t*)conns->ip_packet, 3, 0);
                         conns->state = CLOSED;
                     }
                     conns_prev = conns;
@@ -235,7 +278,7 @@ struct sr_nat_connection *sr_nat_lookup_tcp_connection(struct sr_nat *nat, uint1
 
 /* assumes mapping is a pointer to the actual mapping in sr_nat strcut */
 struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, uint32_t ip_int, uint16_t aux_int,
-    uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state) {
+    uint32_t ext_ip, uint16_t ext_port, sr_nat_tcp_state state, sr_ip_hdr_t* ip_packet) {
 
     pthread_mutex_lock(&(nat->lock));
 
@@ -246,6 +289,16 @@ struct sr_nat_connection *sr_nat_insert_tcp_connection(struct sr_nat *nat, uint3
     conn->ext_port = ext_port;
     conn->ext_ip = ext_ip;
     conn->close_step = 0;
+
+    if (ip_packet) {
+        uint8_t *ip_packet_cpy = (uint8_t*) malloc(sizeof(sr_ip_hdr_t));
+        memcpy(ip_packet_cpy, ip_packet, sizeof(sr_ip_hdr_t));
+        conn->ip_packet = ip_packet_cpy;
+        printf(" sr_nat_insert_tcp_connection\n" );
+        print_hdr_ip((uint8_t*)ip_packet_cpy);
+    } else {
+        conn->ip_packet = 0;
+    }
 
     /* find mapping */
     struct sr_nat_mapping *mapping = nat->mappings;
